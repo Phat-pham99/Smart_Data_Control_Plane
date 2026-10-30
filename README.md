@@ -17,6 +17,27 @@ The central question is whether finer-grained lifecycle control justifies the co
 
 These repositories are complementary public demonstrations, not an already integrated platform or a reproduction of an employer's production system.
 
+## Workflow
+
+### Conceptual workflow animation: one job and its artifacts
+
+![Conceptual 20-step workflow: prepare and submit a synthetic job, observe local Docker capacity, transfer inputs, execute, return outputs, propose export before cleanup, ingest through staging, verify and catalog, evaluate policy after a time jump, persist work, archive only after verification, restore while retaining the archive, and download the same artifact.](docs/assets/portfolio-workflow.gif)
+
+**Conceptual workflow animation, not a live demo.** The 80-second loop follows one synthetic 2 MiB artifact at version 1. Blue paths carry control/metadata; green paths carry bytes; dashed paths mark proposed handoffs. One path is animated at a time. Scene labels distinguish HTCondor mechanisms, proposed handoffs, and gateway design, while the state strip keeps desired and observed placement separate.
+
+[Open GIF](docs/assets/portfolio-workflow.gif) | [Static poster](docs/assets/portfolio-workflow.png) | [Text alternative, source evidence, and regeneration](docs/portfolio-workflow.md)
+
+### Gateway zoom-in: the same returned artifact (conceptual)
+**Conceptual workflow animation: gateway zoom-in.** Continue the same completed job 017 and synthetic 2 MiB artifact v1 from the big picture. A User Environment preserves returned results before the HTCondor demo's cleanup; that export and gateway handoff remain proposed, not implemented integration. The animation then focuses on ingestion, policy, durable work, archive, restore, and later reconciliation design.
+
+![Twenty-step conceptual gateway zoom-in following the same completed job and artifact through proposed result preservation, ingestion, verification, policy timing, durable intent, Redis wake-ups with independent database polling, verified archive and retained-copy restore, download, drift detection and evidence-backed repair.](docs/assets/lifecycle-workflow.gif)
+
+The 80-second loop shares the portfolio animation's typography, colors and artifact identity. It highlights one handoff at a time: blue for control/metadata and green for bytes. The compute job stays complete while artifact lifecycle, desired placement and observed placement change independently. Archive verification precedes source deletion; restore retains the archive. Missing serving bytes produce uncertainty, not invented success. Reconciliation and repair are planned later work, not a demonstrated running service.
+
+[Open GIF](docs/assets/lifecycle-workflow.gif) | [Static poster](docs/assets/lifecycle-workflow.png) | [Text alternative and regeneration](docs/portfolio-workflow.md#gateway-zoom-in-text-alternative)
+
+For the static gateway detail, expand the target architecture section above and see the [planned reliability guarantees](#planned-reliability-guarantees-and-limits) and [failure evidence requirements](PLAN.md#7-reconciliation-and-failure-evidence).
+
 ## Shared Architectural Context
 
 ```mermaid
@@ -316,34 +337,6 @@ Two MinIO buckets demonstrate lifecycle orchestration, not Glacier retrieval beh
 Deferred work includes Grafana, rich policy administration, bulk folder operations, cost estimation, larger logical experiments, multi-worker scaling, the production Amazon S3 deployment, enterprise identity, and separately justified recommendation-only ML. Kubernetes, a custom frontend, and multi-region replication are outside the core scope. Terabyte-scale storage and global access are production design targets, not measured capabilities of this MVP.
 
 Use synthetic/public material only. Owner metadata is not authorization, and the service must not be exposed to untrusted users without authentication and object-level access controls. Neither production readiness nor cross-system atomicity is claimed.
-
-## Workflow Walkthrough
-
-<details>
-<summary>Conceptual workflow animation: one job and its artifacts</summary>
-
-![Conceptual 20-step workflow: prepare and submit a synthetic job, observe local Docker capacity, transfer inputs, execute, return outputs, propose export before cleanup, ingest through staging, verify and catalog, evaluate policy after a time jump, persist work, archive only after verification, restore while retaining the archive, and download the same artifact.](docs/assets/portfolio-workflow.gif)
-
-**Conceptual workflow animation, not a live demo.** The 80-second loop follows one synthetic 2 MiB artifact at version 1. Blue paths carry control/metadata; green paths carry bytes; dashed paths mark proposed handoffs. One path is animated at a time. Scene labels distinguish HTCondor mechanisms, proposed handoffs, and gateway design, while the state strip keeps desired and observed placement separate.
-
-[Open GIF](docs/assets/portfolio-workflow.gif) | [Static poster](docs/assets/portfolio-workflow.png) | [Text alternative, source evidence, and regeneration](docs/portfolio-workflow.md)
-
-</details>
-
-<details>
-<summary>Gateway zoom-in: the same returned artifact (conceptual)</summary>
-
-**Conceptual workflow animation: gateway zoom-in.** Continue the same completed job 017 and synthetic 2 MiB artifact v1 from the big picture. A User Environment preserves returned results before the HTCondor demo's cleanup; that export and gateway handoff remain proposed, not implemented integration. The animation then focuses on ingestion, policy, durable work, archive, restore, and later reconciliation design.
-
-![Twenty-step conceptual gateway zoom-in following the same completed job and artifact through proposed result preservation, ingestion, verification, policy timing, durable intent, Redis wake-ups with independent database polling, verified archive and retained-copy restore, download, drift detection and evidence-backed repair.](docs/assets/lifecycle-workflow.gif)
-
-The 80-second loop shares the portfolio animation's typography, colors and artifact identity. It highlights one handoff at a time: blue for control/metadata and green for bytes. The compute job stays complete while artifact lifecycle, desired placement and observed placement change independently. Archive verification precedes source deletion; restore retains the archive. Missing serving bytes produce uncertainty, not invented success. Reconciliation and repair are planned later work, not a demonstrated running service.
-
-[Open GIF](docs/assets/lifecycle-workflow.gif) | [Static poster](docs/assets/lifecycle-workflow.png) | [Text alternative and regeneration](docs/portfolio-workflow.md#gateway-zoom-in-text-alternative)
-
-For the static gateway detail, expand the target architecture section above and see the [planned reliability guarantees](#planned-reliability-guarantees-and-limits) and [failure evidence requirements](PLAN.md#7-reconciliation-and-failure-evidence).
-
-</details>
 
 ## License
 
