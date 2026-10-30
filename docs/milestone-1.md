@@ -67,9 +67,9 @@ Starlette currently emits a TestClient/httpx deprecation warning. It is visible 
 
 ## Delivery Contract
 
-The workflow separates lint/unit tests, runtime dependency audit, real-service integration/container testing, and main-only image promotion. Publication waits for all three check jobs and loads the exact tested/scanned image artifact, rather than rebuilding it. Published tags are `sha-<full commit>` and `latest`; use the registry digest for immutable deployment references.
+The workflow separates lint/unit tests, runtime dependency audit, real-service integration/container testing, and main-only image promotion. Publication waits for all three check jobs and loads the exact tested image artifact, rather than rebuilding it. Published tags are `sha-<full commit>` and `latest`; use the registry digest for immutable deployment references.
 
-Runtime dependency advisories fail the audit. Fixable HIGH/CRITICAL image findings fail the scan; unfixed and lower-severity findings are outside this blocking threshold, not asserted absent. Dependency updates must rerun the same checks. There are no configured vulnerability suppressions. The source-built development MinIO images are not covered by the application-image scan.
+Runtime dependency advisories fail the audit. The CI image vulnerability scan is currently disabled because its pinned Trivy release is no longer published; the Trivy result above is from the local run only. When re-enabled, fixable HIGH/CRITICAL image findings fail the scan; unfixed and lower-severity findings are outside this blocking threshold, not asserted absent. Dependency updates must rerun the same checks. There are no configured vulnerability suppressions. The source-built development MinIO images are not covered by the application-image scan.
 
 GitHub branch protection, required PR reviews, package publishing permission and any deployment environment approvals must be configured in repository settings. Neither workflow YAML nor local validation proves those settings exist. Actions and GHCR delivery remain unexecuted until the branch is pushed and the workflow runs. There is no automatic production rollout or cloud provisioning.
 
