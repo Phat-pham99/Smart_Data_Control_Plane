@@ -4,14 +4,16 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import redis
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from app import __version__
 from app.config import get_settings
 from app.db.session import engine
+from app.lifecycle import router as lifecycle_router
 from app.objects import router as objects_router
+from app.ownership import ObjectBusy, OwnershipLost
 from app.storage import get_storage
 
 settings = get_settings()
@@ -33,6 +35,24 @@ app = FastAPI(
 )
 
 app.include_router(objects_router)
+app.include_router(lifecycle_router)
+
+
+@app.exception_handler(ObjectBusy)
+def object_busy(request: Request, error: ObjectBusy) -> JSONResponse:
+    return JSONResponse(
+        status_code=409,
+        content={"detail": "Object is busy; retry later"},
+        headers={"Retry-After": "1"},
+    )
+
+
+@app.exception_handler(OwnershipLost)
+def ownership_lost(request: Request, error: OwnershipLost) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Object ownership could not be confirmed; retry later"},
+    )
 
 
 def _check_database() -> tuple[bool, str]:

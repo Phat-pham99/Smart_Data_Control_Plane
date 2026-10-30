@@ -2,7 +2,7 @@
 
 from app.db.base import Base
 from app.models.audit import AuditEvent
-from app.models.job import FolderJob, Job
+from app.models.job import FolderJob, Job, JobAttempt, OutboxEvent
 from app.models.object import StorageObject
 from app.models.policy import Policy
 
@@ -11,6 +11,8 @@ __all__ = [
     "Base",
     "FolderJob",
     "Job",
+    "JobAttempt",
+    "OutboxEvent",
     "Policy",
     "StorageObject",
 ]

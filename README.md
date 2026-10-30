@@ -112,7 +112,7 @@ A production-inspired reference project for application-aware object lifecycle g
 
 **Storage direction:** The MVP is designed to use MinIO for local development, integration tests, and demonstrations. A future production-ready version should use **Amazon S3 for globally accessed, terabyte-scale object data**.
 
-**Current status: verified catalog ingestion, locally tested.** Upload initiation/completion, streamed SHA-256 verification, metadata discovery, download, access recording, and restart persistence work against PostgreSQL and MinIO. CI/CD gates and gated container publication are configured. Policy evaluation, archive/restore, reconciliation, and benchmarks remain planned. This is not a production-ready service.
+**Current status: verified catalog ingestion, locally tested.** Upload initiation/completion, streamed SHA-256 verification, metadata discovery, download, access recording, and restart persistence work against PostgreSQL and MinIO. Milestone 2 has started: policy evaluation and archive/restore admission record durable jobs, but no worker moves bytes yet. Reconciliation and benchmarks remain planned. This is not a production-ready service.
 
 The broader scope and exit criteria are in [PLAN.md](PLAN.md). Commands, local verification evidence, and remaining limitations are recorded in [docs/milestone-1.md](docs/milestone-1.md).
 
@@ -298,13 +298,20 @@ GET  /v1/objects                       Filtered cursor-paginated metadata
 GET  /v1/objects/{object_id}            Catalog lookup
 GET  /v1/objects/{object_id}/download   Short-lived URL for verified active bytes
 POST /v1/objects/{object_id}/access     Explicit application-access record
+POST /v1/objects/{object_id}/archive    Policy-guarded archive intent (Idempotency-Key) -> 202 job
+POST /v1/objects/{object_id}/restore    Restore intent for a verified archive placement -> 202 job
+GET  /v1/jobs/{job_id}                  Job status, decision summary, retry linkage
+GET  /v1/jobs/{job_id}/attempts         Bounded attempt history
+POST /v1/admin/jobs/{job_id}/retry      X-Admin-API-Key; linked replacement for a settled FAILED job
 ```
 
 Initiation requires owner/dataset, logical key, size, SHA-256 and an aware retention deadline. Upload the returned `upload.fields` and file as multipart POST to `upload.url`, then complete. New content uses a new `content_version`; conflicting key reuse returns 409. Active completion retries do not copy again. API responses do not disclose private storage keys.
 
 Discovery supports owner/dataset/workflow/lifecycle, desired/observed class, `created_before`, `created_after`, `last_access_before`, and `limit`/`cursor`. Timestamp filters require a timezone. The executable [synthetic round-trip script](scripts/verify_restart.py) and OpenAPI schema show the request contract.
 
-Archive/restore requests, job status, an admin retry endpoint, and metrics remain planned in [PLAN.md](PLAN.md#6-deterministic-policy-and-minimal-interfaces).
+Archive and restore requests only record durable intent: object state, job, audit decision and outbox event commit in one PostgreSQL transaction under the per-object advisory lock. No worker executes them yet, so queued jobs stay `PENDING` and no bytes move. Manual requests and `python -m app.policies enqueue` use the same seeded `archive-completed-cold-datasets` v1 policy and safety guards; `python -m app.policies evaluate [--at ISO] [--object-id ID]` is a dry run that returns reason codes. Activated policy versions are immutable. Admin retry is disabled (503) unless `ADMIN_API_KEY` is set and is not an authorization model for other routes.
+
+The polling worker, verified archive/restore transfers, Redis Pub/Sub hints, controlled recovery and metrics remain planned in [docs/milestone-2-plan.md](docs/milestone-2-plan.md).
 
 Policy evaluation, outbox notification publication, reconciliation, and finding inspection will start as bounded CLI commands rather than a large admin API. The execution adapter will continuously subscribe and independently poll eligible database operations and due retries.
 
@@ -315,7 +322,7 @@ Milestone 1 has local exit evidence; the remaining milestones are planned. No CI
 | Milestone | Required exit evidence | Status |
 | --- | --- | --- |
 | 1. Verified catalog round trip | PostgreSQL/MinIO upload, checksum verification, query, download, duplicates, and restart persistence | Locally verified; see evidence |
-| 2. One complete lifecycle | Explainable policy -> archive -> restore; Pub/Sub wake-ups with database polling, missed-notification recovery, safe duplicates, concurrency guards, persisted retry/failure evidence | Planned |
+| 2. One complete lifecycle | Explainable policy -> archive -> restore; Pub/Sub wake-ups with database polling, missed-notification recovery, safe duplicates, concurrency guards, persisted retry/failure evidence | In progress: schema, policy, transactional admission and admin retry locally tested; worker and transfers planned |
 | 3. Recovery and demonstration | Bounded reconciliation, findings, minimal metrics, and documented outcomes for every failure-matrix case | Planned |
 | 4. Evaluation and public evidence | Clean-checkout demonstration, fair discovery benchmark, maintenance overhead, and reproducible results report | Planned |
 
