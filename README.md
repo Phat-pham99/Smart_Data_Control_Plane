@@ -310,7 +310,7 @@ Policy evaluation, outbox notification publication, reconciliation, and finding 
 
 ## Delivery Milestones
 
-Milestone 1 has local exit evidence; the remaining milestones are planned. Remote Actions execution is still required after pushing the branch.
+Milestone 1 has local exit evidence; the remaining milestones are planned. No CI workflow is configured, so all evidence comes from local runs.
 
 | Milestone | Required exit evidence | Status |
 | --- | --- | --- |
@@ -339,11 +339,7 @@ RUN_INTEGRATION=1 uv run --frozen pytest --cov=app --cov-fail-under=75
 
 Integration tests skip unless explicitly enabled. Use only an isolated synthetic test database: migration downgrade tests remove its schema. See [the evidence and reproduction commands](docs/milestone-1.md) for the isolated CI port setup and restart verification.
 
-The [Checks and Delivery workflow](.github/workflows/checks.yml) runs on pull requests and pushes to `main` or `feature/**`: frozen dependency installation, lint/format, workflow/shell/Compose checks, unit tests, runtime dependency audit, migration upgrade/downgrade/drift, real-service integration with 75% minimum coverage, and container readiness/restart verification. The image vulnerability scan step is currently disabled because its pinned Trivy release is no longer published, so CI does not scan the image. Runtime dependency advisories fail the audit. Do not bypass findings silently. Rebuild/update affected dependencies and record any separately reviewed exception policy before accepting exceptions.
-
-Only a successful `main` push promotes the exact tested API image to GHCR with `sha-<commit>` and `latest` tags. Feature branches and pull requests never publish. Repository packages permissions must permit the scoped `GITHUB_TOKEN`. This is continuous delivery, not an automatic production deployment. No cloud infrastructure or remote rollout is configured.
-
-Configure GitHub branch protection/rulesets on `main` to require **Lint and Unit Tests**, **Dependency Audit**, and **Real Services and Container**, plus PR review and no direct bypass. Workflow files cannot enforce repository settings. Weekly [Dependabot updates](.github/dependabot.yml) cover Python, Actions and Docker dependencies. Local checks do not prove a remote workflow or GHCR publication has run.
+No GitHub Actions workflow is configured. Run the checks above locally before merging; nothing is checked automatically on pull requests. Container images are not built, scanned, or published by CI, and no cloud infrastructure or remote rollout is configured. Weekly [Dependabot updates](.github/dependabot.yml) cover Python and Docker dependencies.
 
 ## Evidence and Limitations
 

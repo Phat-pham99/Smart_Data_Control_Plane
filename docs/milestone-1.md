@@ -67,11 +67,7 @@ Starlette currently emits a TestClient/httpx deprecation warning. It is visible 
 
 ## Delivery Contract
 
-The workflow separates lint/unit tests, runtime dependency audit, real-service integration/container testing, and main-only image promotion. Publication waits for all three check jobs and loads the exact tested image artifact, rather than rebuilding it. Published tags are `sha-<full commit>` and `latest`; use the registry digest for immutable deployment references.
-
-Runtime dependency advisories fail the audit. The CI image vulnerability scan is currently disabled because its pinned Trivy release is no longer published; the Trivy result above is from the local run only. When re-enabled, fixable HIGH/CRITICAL image findings fail the scan; unfixed and lower-severity findings are outside this blocking threshold, not asserted absent. Dependency updates must rerun the same checks. There are no configured vulnerability suppressions. The source-built development MinIO images are not covered by the application-image scan.
-
-GitHub branch protection, required PR reviews, package publishing permission and any deployment environment approvals must be configured in repository settings. Neither workflow YAML nor local validation proves those settings exist. Actions and GHCR delivery remain unexecuted until the branch is pushed and the workflow runs. There is no automatic production rollout or cloud provisioning.
+No CI workflow is configured. The gates above were run locally and must be rerun locally after dependency updates. The Trivy result is from that local run; the source-built development MinIO images were not scanned. No container image is published to a registry, and there is no automatic production rollout or cloud provisioning.
 
 ## Storage Dependencies
 
@@ -80,7 +76,7 @@ The MinIO/mc image distribution endpoints attempted during setup were unavailabl
 - MinIO source git object `01ce918d8279a20e4706b96a64396146894adee4`, release `RELEASE.2025-09-07T16-13-09Z`.
 - mc source git object `d6541ea280b73a834b64d4097e21f2be77676104`, release `RELEASE.2025-08-13T08-35-41Z`.
 
-Upstream sources are at <https://github.com/minio/minio> and <https://github.com/minio/mc>. Both dependencies are AGPL-3.0; their license text is copied into `/usr/share/licenses` inside the respective image. The build does not modify upstream source. Source dependencies and build instructions are available in the pinned repositories and this Dockerfile. Redistribution requires an appropriate corresponding-source delivery and compliance review; the MIT application license does not relicense these dependencies. Only the application image, not these fixtures, is configured for GHCR publication.
+Upstream sources are at <https://github.com/minio/minio> and <https://github.com/minio/mc>. Both dependencies are AGPL-3.0; their license text is copied into `/usr/share/licenses` inside the respective image. The build does not modify upstream source. Source dependencies and build instructions are available in the pinned repositories and this Dockerfile. Redistribution requires an appropriate corresponding-source delivery and compliance review; the MIT application license does not relicense these dependencies.
 
 These older pinned sources are local test fixtures, not a supported production storage recommendation. Dependency updates, upstream availability, corresponding-source packaging and vulnerability review remain operational responsibilities. Amazon S3 is the later production target, subject to the separate readiness gates in the plan.
 
