@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["s3:ListBucket", "s3:GetBucketLocation"],
+      "Resource": ["arn:aws:s3:::lifecycle-staging", "arn:aws:s3:::lifecycle-dev", "arn:aws:s3:::lifecycle-archive"]
+    },
+    {
+      "Effect": "Allow",
+      "Action": ["s3:GetObject", "s3:PutObject"],
+      "Resource": ["arn:aws:s3:::lifecycle-staging/uploads/*", "arn:aws:s3:::lifecycle-dev/objects/*"]
+    }
+  ]
+}

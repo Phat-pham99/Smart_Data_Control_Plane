@@ -6,6 +6,8 @@
 > **Principle:** The control plane decides. Object storage executes. The reconciler verifies.
 > **Status:** This document specifies target behavior. A feature is demonstrated only when its implementation, tests, and reproducible evidence exist.
 
+Milestone 1 now has [local ingestion and delivery-gate evidence](docs/milestone-1.md). Later milestones remain targets, not implemented features.
+
 ## 1. Problem and Engineering Question
 
 Manage synthetic engineering-style objects using business metadata such as workflow completion, application access, legal hold, and retention requirements. PostgreSQL stores searchable metadata and durable intent; S3-compatible storage holds object bytes.
@@ -30,7 +32,7 @@ The first two hypotheses define the core project. Cost modeling is a later exten
 
 ### Core demonstrable release
 
-- Docker Compose: FastAPI, PostgreSQL, RabbitMQ, MinIO, and one Celery execution worker.
+- Docker Compose: FastAPI, PostgreSQL, Redis, MinIO, and one subscriber/database-polling execution worker.
 - Upload initiation and completion, verified ingestion, metadata discovery, and download.
 - One deterministic, versioned archive policy with explainable acceptance and rejection.
 - Asynchronous archive and restore with durable intent, bounded retries, and queryable failures.
@@ -73,20 +75,20 @@ Before declaring that deployment production-ready:
 
 ## 3. Starting Point and Target Architecture
 
-The existing repository contains a FastAPI health surface, database models and migrations, Celery bootstrap, and foundation tests. Its Compose configuration uses Redis, and its README describes an earlier AWS-oriented design. These are starting assets, not evidence that the workflows below work.
+The repository now contains verified catalog ingestion, real PostgreSQL/MinIO integration tests and delivery gates. The original Celery health bootstrap remains opt-in legacy code; it is not the future lifecycle execution adapter.
 
-**Decision:** Keep RabbitMQ as the target command broker. Milestone 1 explicitly migrates the current Celery/Redis configuration and adds MinIO. Do not maintain two broker paths in the core release. PostgreSQL, not a Celery result backend, is authoritative for operation status.
+**Decision:** Keep Redis Pub/Sub as best-effort operation-ID wake-ups and independently poll PostgreSQL for durable work and due retries. Pub/Sub has no persistence, acknowledgement, replay, or redelivery. PostgreSQL, not Redis or a Celery result backend, is authoritative for operation status. Do not add another broker.
 
 ```text
 Client --HTTP--> FastAPI --transactions--> PostgreSQL
   |                                         |
   +--presigned upload--> MinIO staging       +-- operations + outbox
                                             |
-                                      outbox dispatcher
+                                      outbox publisher
                                             |
-                                         RabbitMQ
+                                        Redis Pub/Sub
                                             |
-                                     Celery worker
+                                    subscriber + DB poller
                                       /          \
                                MinIO active   MinIO archive
 
@@ -96,7 +98,7 @@ Logs, audit events, and metrics provide evidence throughout.
 
 Use one codebase and the existing `app/`, `alembic/`, and `tests/` layout. Add modules only when an implemented behavior needs them; do not reorganize the repository into multiple applications for appearance. Keep policy predicates and state-transition rules independent of infrastructure adapters.
 
-The dispatcher and reconciler may be bounded CLI commands invoked by a documented scheduler. Start with one execution worker at concurrency 1; this limits the experiment and is not a substitute for database-enforced serialization.
+The publisher and reconciler may be bounded CLI commands invoked by a documented scheduler. The execution adapter independently polls pending work and due retries at startup and at bounded intervals, even without notifications. Start with one execution worker at concurrency 1; this limits the experiment and is not a substitute for database-enforced serialization.
 
 ## 4. Reliability Contract
 
@@ -113,10 +115,10 @@ The dispatcher and reconciler may be bounded CLI commands invoked by a documente
 ### Durable intent and delivery
 
 - In one PostgreSQL transaction, validate the transition, persist desired state, create the operation, record the audit event, and insert an outbox event.
-- The dispatcher publishes persistent messages to durable RabbitMQ queues using publisher confirms and checks routing success. Mark an outbox event delivered only after confirmed publication.
-- A crash between publish and database acknowledgement can duplicate a message. Consumers must inspect the persisted operation and safely acknowledge already terminal work.
-- Recover undelivered outbox rows and stale dispatch claims. Also detect queued operations with no progress and republish their existing IDs, covering confirmed messages subsequently lost from the broker.
-- Queue messages contain validated operation identifiers, not authoritative storage locations or state. Workers load those facts from PostgreSQL.
+- The publisher emits ephemeral Redis Pub/Sub operation-ID notifications. Record publication attempts, not acknowledged delivery: `PUBLISH` success or subscriber count does not establish receipt or execution.
+- A crash between publication and recording the attempt can duplicate a notification. Notification and polling paths load the persisted operation and skip terminal work without further storage mutation.
+- Independently poll pending operations and due retries in bounded indexed batches, including on startup/reconnect. Missed notifications, Redis outages and subscriber disconnects must not strand committed work or block the database poller.
+- Notifications contain validated operation identifiers, not authoritative storage locations or state. Workers load those facts from PostgreSQL.
 
 ### Concurrency and operation ownership
 
@@ -140,9 +142,9 @@ If the database commit fails after source deletion, recovery verifies the surviv
 
 - Persist attempts and retry deadlines; use bounded exponential backoff with jitter for classified transient failures.
 - Do not retry malformed commands, checksum conflicts, or invalid transitions as transient errors.
-- PostgreSQL retry scheduling is authoritative; avoid independently multiplying Celery and application retries.
-- Exhausted operations remain `FAILED` with attempt history. Publish a diagnostic event to a dead-letter queue through the outbox; database failure records remain authoritative if that publication fails.
-- Poisoned messages are rejected into a configured broker dead-letter queue without executing storage actions.
+- PostgreSQL retry scheduling is authoritative; Pub/Sub does not schedule retries.
+- Exhausted operations remain `FAILED` with queryable attempt history in PostgreSQL. There is no broker-native dead-letter queue.
+- Malformed notifications are rejected and logged/counted without storage actions; persisted operation failures remain available for administrative review.
 - An explicit admin retry creates a linked replacement operation with its own idempotency key and attempt budget. Preserve the original failure and revalidate current state.
 
 ## 5. Minimal Domain Model and State Semantics
@@ -155,7 +157,7 @@ Map these concepts onto existing models through migrations; do not silently repu
 | Policy version | Stable policy identity, version, enabled status, priority, validated conditions/action, activation/supersession timestamps. Activated versions are immutable. |
 | Lifecycle operation | UUID, object/version, type, scoped idempotency key and request fingerprint, status, attempts/budget, retry deadline, error/reason, timestamps, replacement link. |
 | Operation attempt | Operation ID, attempt number, stage reached, start/end timestamps, error classification and sanitized detail. |
-| Outbox event | UUID, operation/event type, validated payload, publication state, claim/retry timestamps, delivered timestamp. |
+| Outbox event | UUID, operation/event type, validated payload, publication-attempt state, claim/retry timestamps, last-published timestamp; never a delivery acknowledgement. |
 | Audit event | Object/operation IDs, actor, event type, old/new state, reason, timestamp. |
 | Reconciliation finding | Object or storage location, type, severity, evidence, first/last seen, resolution and repair operation. |
 
@@ -235,17 +237,18 @@ Reconcile catalog rows and storage listings in separate bounded, resumable passe
 | Injected condition | Required outcome and recovery |
 | --- | --- |
 | Upload succeeds; final catalog commit fails | Inspect staging/private destination and finish verified registration, or report an orphan after a grace period. Never infer ownership from a key alone. |
-| Commit succeeds; publication is interrupted | Pending outbox replay delivers the original operation. |
-| Publication succeeds; delivered flag is not committed | Duplicate delivery has no additional logical effect. |
+| Commit succeeds; publication is interrupted | Independent database polling picks up the original operation; pending outbox publication may reduce latency. |
+| Publication succeeds; attempt is not committed | Duplicate publication has no additional logical effect. |
+| Notification is lost or Redis/subscriber restarts | Startup and periodic database polling recover eligible work without notification replay. |
 | Worker stops after claim, copy, verification, or source deletion | After exclusive ownership is re-established, inspect real bytes and resume the same operation without deleting the last verified copy. |
-| Duplicate command or broker redelivery | At most one active executor per object; completed work is acknowledged without new mutations. |
-| Transient MinIO, PostgreSQL, or broker failure | Bounded retries and visible attempt history; eventual success after dependency recovery or inspectable exhaustion. |
+| Duplicate command, notification or poll result | At most one active executor per object; completed work is skipped without new mutations. |
+| Transient MinIO, PostgreSQL, or Redis failure | Bounded database-scheduled retries and visible attempt history; Redis outages cannot block database pickup. |
 | Checksum mismatch or conflicting destination | No source deletion or success state; record finding and require review of ambiguous bytes. |
 | Expected active/archive copy is missing | Mark missing or drifted; copy from a verified alternative only when catalog intent authorizes it. Otherwise require manual recovery. |
 | Both copies exist | Accept explicitly retained restore copies; otherwise classify using operation stage and intent before any repair. |
 | Unregistered storage object | Record orphan after upload grace period; no automatic adoption or deletion. |
 | Operation is stuck | Record finding, distinguish pending delivery from uncertain ownership, and recover only after the ownership rule is satisfied. |
-| Malformed message or exhausted retry budget | No unsafe mutation; queryable diagnostic and dead-letter evidence. |
+| Malformed notification or exhausted retry budget | No unsafe mutation; logged notification diagnostics and queryable database failure evidence. |
 
 Safe automatic repairs are limited to republishing durable intent, resuming exclusively owned operations, verified authorized copies, and evidence-backed metadata completion. Destructive ambiguity requires manual review. Findings must remain visible even when repaired.
 
@@ -255,15 +258,15 @@ Implement in order. At every milestone, update README status as implemented/test
 
 ### Milestone 1: Verified catalog round trip
 
-Deliver the RabbitMQ migration, MinIO buckets/permissions, required schema migrations, upload/finalization, download, indexed metadata query, audit history, and structured logs. Replace stale Redis/AWS/Glacier README claims with the actual local architecture.
+Deliver MinIO buckets/permissions alongside existing Redis/PostgreSQL, required schema migrations, upload/finalization, download, indexed metadata query, audit history, and structured logs. Keep README claims aligned with the actual local architecture.
 
 **Exit evidence:** A synthetic object is uploaded, verified, queried, and downloaded with matching SHA-256; duplicate initiation/completion creates no conflict; conflicting key reuse is rejected; metadata and bytes survive stack restart. Integration tests use real local PostgreSQL and MinIO, not mocks alone.
 
 ### Milestone 2: One complete lifecycle
 
-Deliver the seeded deterministic policy, candidate selection, transactional outbox, per-object ownership, archive/restore worker, operation status, bounded retries, and dead-letter handling.
+Deliver the seeded deterministic policy, candidate selection, transactional outbox publisher, Pub/Sub subscriber plus independent database polling, per-object ownership, archive/restore worker, operation status, bounded retries and persisted failure review.
 
-**Exit evidence:** Upload -> explain decision -> archive -> verify -> restore -> verify works. Legal hold and retention guards reject unsafe archival. Duplicate delivery, conflicting commands, publication interruptions, and corrupt destinations satisfy the reliability contract. Explain why a restored retained archive copy is expected.
+**Exit evidence:** Upload -> explain decision -> archive -> verify -> restore -> verify works. Legal hold and retention guards reject unsafe archival. Duplicate notifications/polling, conflicting commands, publication interruptions, subscriber disconnects, Redis outages and corrupt destinations satisfy the reliability contract. Measure database pickup latency and explain why a restored retained archive copy is expected.
 
 ### Milestone 3: Recovery and reproducible demonstration
 
@@ -326,7 +329,7 @@ The release must contain:
 
 - [ ] One-command documented local startup and explicit implemented/tested/planned status.
 - [ ] Verified upload/query/download and policy/archive/restore round trips.
-- [ ] Durable-intent and duplicate-message tests, concurrency guards, and retry/dead-letter evidence.
+- [ ] Durable-intent and duplicate-notification/polling tests, concurrency guards, and retry/failure-history evidence.
 - [ ] Recovery results for every failure-matrix row, including limitations and manual cases.
 - [ ] Indexed-discovery results with equivalent baselines and maintenance overhead.
 - [ ] Architecture, state-machine, and consistency explanations matching the code.

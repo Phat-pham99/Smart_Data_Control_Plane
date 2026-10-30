@@ -112,11 +112,11 @@ A production-inspired reference project for application-aware object lifecycle g
 
 **Storage direction:** The MVP is designed to use MinIO for local development, integration tests, and demonstrations. A future production-ready version should use **Amazon S3 for globally accessed, terabyte-scale object data**.
 
-**Current status: foundation only.** The repository contains infrastructure, models, migrations, a Celery bootstrap, and foundation tests. Upload, policy evaluation, archive/restore, reconciliation, and benchmarks are planned, not demonstrated capabilities. This is not a production-ready service.
+**Current status: verified catalog ingestion, locally tested.** Upload initiation/completion, streamed SHA-256 verification, metadata discovery, download, access recording, and restart persistence work against PostgreSQL and MinIO. CI/CD gates and gated container publication are configured. Policy evaluation, archive/restore, reconciliation, and benchmarks remain planned. This is not a production-ready service.
 
-The broader scope and exit criteria are in [PLAN.md](PLAN.md). The Redis Pub/Sub design below supersedes that document's older broker-specific messaging descriptions; the plan and runtime implementation have not yet been migrated to this revision.
+The broader scope and exit criteria are in [PLAN.md](PLAN.md). Commands, local verification evidence, and remaining limitations are recorded in [docs/milestone-1.md](docs/milestone-1.md).
 
-[Setup](#run-the-existing-foundation) | [API status](#api-status) | [Checks](#development-and-checks) | [Evidence and limitations](#evidence-and-limitations)
+[Setup](#run-the-ingestion-mvp) | [API status](#api-status) | [Checks](#development-and-checks) | [Evidence and limitations](#evidence-and-limitations)
 
 ## Problem and Evaluation
 
@@ -133,15 +133,15 @@ Negative results and limitations belong in the report. Cost modeling is a deferr
 
 ## Current Implementation and Target
 
-| Area | Existing foundation | Core-release target |
+| Area | Implemented now | Core-release target |
 | --- | --- | --- |
-| API | FastAPI service metadata and health endpoints | Verified upload/download, metadata discovery, lifecycle requests, operation status |
-| Persistence | PostgreSQL models and initial Alembic migration | Desired/observed state, immutable versions, durable operations, outbox, audit and findings |
+| API | Verified upload/download, cursor-paginated discovery, access and health endpoints | Lifecycle requests and operation status |
+| Persistence | Immutable content identity, metadata, desired/observed ingestion state, audit; two migrations | Durable operations, outbox, policy versions and findings |
 | Messaging | Celery with Redis; health task | Redis Pub/Sub wake-ups, independent PostgreSQL polling, idempotent execution, bounded database-scheduled retries |
-| Storage | S3 configuration fields; no MinIO Compose service | MinIO staging namespace and private active/archive locations |
+| Storage | Real MinIO staging/private active buckets, scoped API user, bounded presigned POST, destination verification | Archive/restore and safe staging maintenance |
 | Policies | Model foundation | One seeded, deterministic, versioned policy with acceptance/rejection reasons |
 | Recovery | No lifecycle recovery workflow yet | Bounded reconciliation and documented failure-injection results |
-| Evidence | Configuration, enum/state-transition, and health test files | Real-service integration tests, recovery matrix, reproducible discovery benchmark |
+| Evidence | Real PostgreSQL/MinIO ingestion, concurrency, corruption, interrupted-commit and restart checks | Lifecycle failure matrix and reproducible discovery benchmark |
 
 The target retains Redis and adds MinIO. Redis Pub/Sub carries ephemeral operation-ID notifications, while PostgreSQL stores durable work, attempts, retry deadlines, and failures. A subscriber and an independent bounded database poller feed one execution worker. This is a planned execution adapter, not Celery's existing Redis queue transport; the current Celery bootstrap does not implement it.
 
@@ -238,20 +238,20 @@ Storage-to-storage arrows summarize service-controlled transfers: destination by
 - Test subscriber disconnect/reconnect, publication before subscription, Redis restart/outage, duplicate publication, and a successful `PUBLISH` whose notification never reaches execution. Verify recovery from the database and measure the polling latency/load trade-off; fewer technologies does not establish lower cost by itself.
 - Record discrepancies and repair only evidence-backed, authorized cases. Destructive ambiguity requires manual review.
 
-Worker timeout alone does not establish exclusive ownership. The core assumes controlled single-worker restart, settled in-flight requests, and bounded storage timeouts. Database polling must not blindly reclaim running work after a timeout; uncertain ownership requires controlled recovery. The storage and ownership rules in the [reliability contract](PLAN.md#4-reliability-contract) still apply, but its older broker-confirmation and dead-letter provisions do not describe this Pub/Sub revision.
+Worker timeout alone does not establish exclusive ownership. The core assumes controlled single-worker restart, settled in-flight requests, and bounded storage timeouts. Database polling must not blindly reclaim running work after a timeout; uncertain ownership requires controlled recovery. See the [reliability contract](PLAN.md#4-reliability-contract).
 
 </details>
 
-## Run the Existing Foundation
+## Run the Ingestion MVP
 
-Prerequisites: Docker with Docker Compose. Local development additionally requires Python 3.12+; `uv` is optional.
+Prerequisites: Docker with Docker Compose and GitHub access to build the pinned MinIO/mc sources. First build takes several minutes. Development and test commands use Python 3.12 and `uv` 0.12.3.
 
 ```bash
 cp .env.example .env
 docker compose up --build
 ```
 
-The current Compose configuration starts PostgreSQL 16, Redis 7, FastAPI, and a Celery worker with the health task registered. It does **not** provide MinIO, the planned Pub/Sub subscriber/database poller, or a working lifecycle demonstration. The API container applies migrations at startup.
+Compose starts PostgreSQL 16, Redis 7, MinIO, bucket/user initialization, and the non-root FastAPI image. The API waits for PostgreSQL before applying migrations. The obsolete Celery health worker is opt-in through the `legacy-worker` profile; it is not the planned Pub/Sub subscriber/poller.
 
 ```bash
 curl http://localhost:8000/
@@ -259,9 +259,13 @@ curl http://localhost:8000/health
 curl http://localhost:8000/health/ready
 ```
 
-OpenAPI documentation: <http://localhost:8000/docs>. Readiness currently checks PostgreSQL and Redis; it is not evidence of storage or lifecycle readiness.
+OpenAPI documentation: <http://localhost:8000/docs>. MinIO console: <http://localhost:9001>. Readiness requires PostgreSQL and the staging/active buckets; Redis is diagnostic, so its outage reports HTTP 200 with `status=degraded`. Liveness is not readiness or proof of lifecycle correctness.
 
-Treat this foundation as a trusted local development environment only. The current Compose file publishes service ports without loopback-only binding; restrict network access before starting it. Loopback binding and least-privilege storage permissions are planned baseline work, not existing protections.
+All published ports bind to loopback. If port 8000 is occupied, use `API_PORT=58000 docker compose up --build` and open port 58000 instead. On an SSH host, forward the API and MinIO ports to the browser machine; signed storage URLs must be reachable there.
+
+Treat this as a trusted local development environment only. There is no authentication or tenant authorization. The API storage user has scoped staging/active rights, not MinIO administration or deletion rights. Staging bytes persist until explicitly maintained; URL expiry does not delete them.
+
+MinIO and mc are AGPL-3.0 dependencies built from pinned upstream sources in [docker/minio.Dockerfile](docker/minio.Dockerfile), with their licenses retained in the images. This does not change the application's MIT license. Review the [source and distribution notes](docs/milestone-1.md#storage-dependencies) before redistributing those images; these local builds are not a production support or security commitment.
 
 ### Current configuration
 
@@ -270,10 +274,12 @@ See [.env.example](.env.example) and [app/config.py](app/config.py). Keep real s
 | Variable | Current purpose |
 | --- | --- |
 | `DATABASE_URL` | PostgreSQL connection URL |
-| `REDIS_URL` | Default Celery broker/backend and current readiness dependency |
-| `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Optional Celery URL overrides; readiness still checks Redis |
-| `S3_REGION`, `S3_BUCKET`, `S3_ENDPOINT_URL` | Storage configuration fields; workflows are not implemented |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Optional storage credentials; use local synthetic resources only |
+| `REDIS_URL` | Diagnostic readiness check and legacy Celery defaults |
+| `CELERY_BROKER_URL`, `CELERY_RESULT_BACKEND` | Optional legacy Celery overrides |
+| `S3_REGION`, `S3_BUCKET`, `S3_STAGING_BUCKET`, `S3_ENDPOINT_URL` | Internal verified-ingestion storage settings |
+| `S3_PUBLIC_ENDPOINT_URL` | Endpoint clients can reach for signed transfers |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Scoped storage credentials; synthetic local resources only |
+| `MAX_UPLOAD_BYTES`, `SIGNED_URL_SECONDS` | Host application defaults: 10 MiB uploads and 300-second signed transfers |
 | `ADMIN_API_KEY` | Configuration field only; no admin endpoint enforcement is implemented |
 
 Do not interpret configuration fields as evidence that their associated features exist.
@@ -285,20 +291,30 @@ Currently implemented:
 ```text
 GET /                 Service metadata
 GET /health           Process liveness
-GET /health/ready     PostgreSQL and Redis readiness
+GET /health/ready     PostgreSQL/storage readiness; diagnostic Redis
+POST /v1/uploads/initiate               Metadata + Idempotency-Key -> bounded upload form
+POST /v1/uploads/{object_id}/complete   Stream-verify, promote, verify -> ACTIVE
+GET  /v1/objects                       Filtered cursor-paginated metadata
+GET  /v1/objects/{object_id}            Catalog lookup
+GET  /v1/objects/{object_id}/download   Short-lived URL for verified active bytes
+POST /v1/objects/{object_id}/access     Explicit application-access record
 ```
 
-The planned core API adds upload initiation/completion, object lookup and cursor-paginated discovery, download, application-access recording, archive/restore requests, job status, an admin retry endpoint, and metrics. These routes are specified in [PLAN.md](PLAN.md#6-deterministic-policy-and-minimal-interfaces); they are not available yet.
+Initiation requires owner/dataset, logical key, size, SHA-256 and an aware retention deadline. Upload the returned `upload.fields` and file as multipart POST to `upload.url`, then complete. New content uses a new `content_version`; conflicting key reuse returns 409. Active completion retries do not copy again. API responses do not disclose private storage keys.
+
+Discovery supports owner/dataset/workflow/lifecycle, desired/observed class, `created_before`, `created_after`, `last_access_before`, and `limit`/`cursor`. Timestamp filters require a timezone. The executable [synthetic round-trip script](scripts/verify_restart.py) and OpenAPI schema show the request contract.
+
+Archive/restore requests, job status, an admin retry endpoint, and metrics remain planned in [PLAN.md](PLAN.md#6-deterministic-policy-and-minimal-interfaces).
 
 Policy evaluation, outbox notification publication, reconciliation, and finding inspection will start as bounded CLI commands rather than a large admin API. The execution adapter will continuously subscribe and independently poll eligible database operations and due retries.
 
 ## Delivery Milestones
 
-All four consolidated milestones remain planned. The existing foundation is a starting point, not a completed Milestone 1.
+Milestone 1 has local exit evidence; the remaining milestones are planned. No CI workflow is configured, so all evidence comes from local runs.
 
 | Milestone | Required exit evidence | Status |
 | --- | --- | --- |
-| 1. Verified catalog round trip | Existing Redis/PostgreSQL plus MinIO; upload, checksum verification, query, download, duplicate handling, and restart persistence | Planned |
+| 1. Verified catalog round trip | PostgreSQL/MinIO upload, checksum verification, query, download, duplicates, and restart persistence | Locally verified; see evidence |
 | 2. One complete lifecycle | Explainable policy -> archive -> restore; Pub/Sub wake-ups with database polling, missed-notification recovery, safe duplicates, concurrency guards, persisted retry/failure evidence | Planned |
 | 3. Recovery and demonstration | Bounded reconciliation, findings, minimal metrics, and documented outcomes for every failure-matrix case | Planned |
 | 4. Evaluation and public evidence | Clean-checkout demonstration, fair discovery benchmark, maintenance overhead, and reproducible results report | Planned |
@@ -310,21 +326,20 @@ At each milestone, update implemented/tested/planned status, run the full availa
 ## Development and Checks
 
 ```bash
-uv venv --python 3.12
-uv pip install -e ".[dev]"
-source .venv/bin/activate
+uv sync --frozen --extra dev
 
-ruff check .
-ruff format --check .
-pytest
+uv run --frozen ruff check .
+uv run --frozen ruff format --check .
+uv run --frozen pytest -m 'not integration'
 
-# Requires the configured PostgreSQL instance.
-alembic upgrade head
+# Requires the configured PostgreSQL and initialized MinIO services.
+uv run --frozen alembic upgrade head
+RUN_INTEGRATION=1 uv run --frozen pytest --cov=app --cov-fail-under=75
 ```
 
-Current tests cover configuration, enums/state transitions, and health behavior. They do not establish end-to-end lifecycle correctness.
+Integration tests skip unless explicitly enabled. Use only an isolated synthetic test database: migration downgrade tests remove its schema. See [the evidence and reproduction commands](docs/milestone-1.md) for the isolated CI port setup and restart verification.
 
-The existing [CI workflow](.github/workflows/ci.yml) configures lint, format checks, migration upgrade, and tests with coverage on pull requests and pushes to `main` or `feature/**`. This describes configured checks, not a claim that the latest run passed. Real-service lifecycle integration tests, failure injection, and dependency/container scanning remain planned gates.
+No GitHub Actions workflow is configured. Run the checks above locally before merging; nothing is checked automatically on pull requests. Container images are not built, scanned, or published by CI, and no cloud infrastructure or remote rollout is configured. Weekly [Dependabot updates](.github/dependabot.yml) cover Python and Docker dependencies.
 
 ## Evidence and Limitations
 

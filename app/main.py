@@ -11,6 +11,8 @@ from sqlalchemy import text
 from app import __version__
 from app.config import get_settings
 from app.db.session import engine
+from app.objects import router as objects_router
+from app.storage import get_storage
 
 settings = get_settings()
 
@@ -30,23 +32,39 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.include_router(objects_router)
+
 
 def _check_database() -> tuple[bool, str]:
     try:
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return True, "ok"
-    except Exception as exc:  # noqa: BLE001
-        return False, f"error: {exc}"
+    except Exception:  # noqa: BLE001
+        return False, "unavailable"
 
 
 def _check_redis() -> tuple[bool, str]:
     try:
-        client = redis.Redis.from_url(settings.redis_url, socket_connect_timeout=2)
-        client.ping()
+        with redis.Redis.from_url(
+            settings.redis_url,
+            socket_connect_timeout=settings.dependency_timeout_seconds,
+            socket_timeout=settings.dependency_timeout_seconds,
+        ) as client:
+            client.ping()
         return True, "ok"
-    except Exception as exc:  # noqa: BLE001
-        return False, f"error: {exc}"
+    except Exception:  # noqa: BLE001
+        return False, "unavailable"
+
+
+def _check_storage() -> tuple[bool, str]:
+    try:
+        storage = get_storage()
+        for bucket in (settings.s3_staging_bucket, settings.s3_bucket):
+            storage.client.head_bucket(Bucket=bucket)
+        return True, "ok"
+    except Exception:  # noqa: BLE001
+        return False, "unavailable"
 
 
 @app.get("/", tags=["meta"])
@@ -67,16 +85,18 @@ def health() -> dict[str, str]:
 
 @app.get("/health/ready", tags=["health"])
 def readiness() -> JSONResponse:
-    """Readiness probe: dependencies (Postgres, Redis) are reachable."""
+    """Ingestion requires PostgreSQL and storage; Redis is diagnostic only."""
 
     db_ok, db_detail = _check_database()
     redis_ok, redis_detail = _check_redis()
+    storage_ok, storage_detail = _check_storage()
     checks: dict[str, Any] = {
         "database": db_detail,
         "redis": redis_detail,
+        "storage": storage_detail,
     }
-    healthy = db_ok and redis_ok
+    healthy = db_ok and storage_ok
     return JSONResponse(
         status_code=200 if healthy else 503,
-        content={"status": "ok" if healthy else "degraded", "checks": checks},
+        content={"status": "ok" if healthy and redis_ok else "degraded", "checks": checks},
     )

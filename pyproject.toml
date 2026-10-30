@@ -29,6 +29,7 @@ dev = [
     "pytest-cov>=6.0,<7.0",
     "httpx>=0.27,<1.0",
     "ruff>=0.7,<1.0",
+    "pip-audit>=2.9,<3.0",
 ]
 
 [tool.hatch.build.targets.wheel]
@@ -52,3 +53,4 @@ exclude = ["PLAN.md"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+markers = ["integration: requires the isolated PostgreSQL, Redis, and MinIO stack"]

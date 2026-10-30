@@ -16,6 +16,7 @@ class StorageClass(StrEnum):
 class LifecycleState(StrEnum):
     """States of an object within the lifecycle state machine."""
 
+    INGESTING = "INGESTING"
     CREATED = "CREATED"
     ACTIVE = "ACTIVE"
     ARCHIVE_REQUESTED = "ARCHIVE_REQUESTED"
@@ -44,6 +45,7 @@ class JobStatus(StrEnum):
 RESTORE_REQUIRED_STATES: frozenset[LifecycleState] = frozenset({LifecycleState.ARCHIVED})
 
 ALLOWED_TRANSITIONS: dict[LifecycleState, frozenset[LifecycleState]] = {
+    LifecycleState.INGESTING: frozenset({LifecycleState.ACTIVE, LifecycleState.FAILED}),
     LifecycleState.CREATED: frozenset({LifecycleState.ACTIVE, LifecycleState.FAILED}),
     LifecycleState.ACTIVE: frozenset({LifecycleState.ARCHIVE_REQUESTED, LifecycleState.FAILED}),
     LifecycleState.ARCHIVE_REQUESTED: frozenset({LifecycleState.ARCHIVING, LifecycleState.FAILED}),
