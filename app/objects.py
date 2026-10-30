@@ -11,7 +11,7 @@ from typing import Annotated
 from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from pydantic import AwareDatetime
-from sqlalchemy import select, text, tuple_
+from sqlalchemy import select, tuple_
 from sqlalchemy.exc import IntegrityError as DatabaseConflict
 from sqlalchemy.orm import Session
 
@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.db.session import get_db
 from app.enums import LifecycleState
 from app.models import AuditEvent, StorageObject
+from app.ownership import object_lock
 from app.schemas import ObjectPage, ObjectView, UploadRequest, UploadSession
 from app.storage import IntegrityError, ObjectStorage, get_storage
 
@@ -129,13 +130,17 @@ def initiate_upload(
                 raise HTTPException(409, "This logical object version already exists") from None
     if obj.request_fingerprint != fingerprint:
         raise HTTPException(409, "Idempotency-Key was used with a different request")
+    awaiting_bytes = obj.ingestion_verified_at is None and obj.lifecycle_state in (
+        LifecycleState.INGESTING,
+        LifecycleState.FAILED,
+    )
     try:
         upload = (
-            None
-            if obj.lifecycle_state == LifecycleState.ACTIVE
-            else storage.upload_form(
+            storage.upload_form(
                 obj.staging_bucket, obj.staging_key, obj.size_bytes, obj.content_type
             )
+            if awaiting_bytes
+            else None
         )
     except (BotoCoreError, ClientError) as error:
         raise storage_error(error) from error
@@ -147,47 +152,38 @@ def initiate_upload(
 
 @router.post("/uploads/{object_id}/complete", response_model=ObjectView)
 def complete_upload(object_id: uuid.UUID, db: Database, storage: Storage):
-    lock_key = int.from_bytes(object_id.bytes[:8], "big", signed=True)
-    with db.get_bind().connect() as lock_connection:
-        acquired = lock_connection.scalar(
-            text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_key}
-        )
-        lock_connection.commit()
-        if not acquired:
-            raise HTTPException(409, "Object is being finalized; retry later")
-        try:
-            obj = find_object(db, object_id)
-            if obj.lifecycle_state == LifecycleState.ACTIVE:
-                return ObjectView.model_validate(obj)
-            if (
-                obj.lifecycle_state not in (LifecycleState.INGESTING, LifecycleState.FAILED)
-                or not obj.staging_key
-            ):
-                raise HTTPException(409, "Object cannot be finalized from its current state")
-            previous = obj.lifecycle_state
-            db.commit()
-            try:
-                storage.promote(obj)
-            except IntegrityError as error:
-                obj.lifecycle_state = LifecycleState.FAILED
-                audit(db, obj, previous, str(error))
-                db.commit()
-                log_event(obj, "verification_failed")
-                raise storage_error(error) from error
-            except (BotoCoreError, ClientError) as error:
-                raise storage_error(error) from error
-            lock_connection.execute(text("SELECT 1"))
-            lock_connection.commit()
-            obj.lifecycle_state = LifecycleState.ACTIVE
-            obj.observed_storage_class = "ACTIVE"
-            audit(db, obj, previous, "INGESTION_VERIFIED")
-            db.commit()
-            log_event(obj, "ingestion_verified")
+    with object_lock(db.get_bind(), object_id) as lock:
+        obj = db.get(StorageObject, object_id, populate_existing=True)
+        if obj is None:
+            raise HTTPException(404, "Object not found")
+        # Verified ingestion is final; later lifecycle states must never re-ingest bytes.
+        if obj.ingestion_verified_at is not None or obj.lifecycle_state == LifecycleState.ACTIVE:
             return ObjectView.model_validate(obj)
-        finally:
-            if not lock_connection.invalidated:
-                lock_connection.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
-                lock_connection.commit()
+        if (
+            obj.lifecycle_state not in (LifecycleState.INGESTING, LifecycleState.FAILED)
+            or not obj.staging_key
+        ):
+            raise HTTPException(409, "Object cannot be finalized from its current state")
+        previous = obj.lifecycle_state
+        db.commit()
+        try:
+            storage.promote(obj)
+        except IntegrityError as error:
+            obj.lifecycle_state = LifecycleState.FAILED
+            audit(db, obj, previous, str(error))
+            db.commit()
+            log_event(obj, "verification_failed")
+            raise storage_error(error) from error
+        except (BotoCoreError, ClientError) as error:
+            raise storage_error(error) from error
+        lock.verify()
+        obj.lifecycle_state = LifecycleState.ACTIVE
+        obj.observed_storage_class = "ACTIVE"
+        obj.ingestion_verified_at = datetime.now(UTC)
+        audit(db, obj, previous, "INGESTION_VERIFIED")
+        db.commit()
+        log_event(obj, "ingestion_verified")
+        return ObjectView.model_validate(obj)
 
 
 @router.get("/objects/{object_id}", response_model=ObjectView)
@@ -258,21 +254,26 @@ def list_objects(
 
 @router.get("/objects/{object_id}/download")
 def download_object(object_id: uuid.UUID, db: Database, storage: Storage):
-    obj = find_object(db, object_id)
-    if obj.lifecycle_state != LifecycleState.ACTIVE or obj.observed_storage_class != "ACTIVE":
-        raise HTTPException(409, "Only verified active objects can be downloaded")
-    try:
-        url = storage.download_url(obj)
-    except (BotoCoreError, ClientError, IntegrityError) as error:
-        raise storage_error(error) from error
+    find_object(db, object_id)
+    # Ownership prevents issuing a URL while a lifecycle move holds the object.
+    with object_lock(db.get_bind(), object_id, get_settings().object_lock_wait_seconds):
+        obj = db.get(StorageObject, object_id, populate_existing=True)
+        if obj.lifecycle_state != LifecycleState.ACTIVE or obj.observed_storage_class != "ACTIVE":
+            raise HTTPException(409, "Only verified active objects can be downloaded")
+        try:
+            url = storage.download_url(obj)
+        except (BotoCoreError, ClientError, IntegrityError) as error:
+            raise storage_error(error) from error
     return {"url": url, "expires_in": get_settings().signed_url_seconds}
 
 
 @router.post("/objects/{object_id}/access", response_model=ObjectView)
 def record_access(object_id: uuid.UUID, db: Database):
-    obj = find_object(db, object_id)
-    obj.last_accessed_at = datetime.now(UTC)
-    obj.access_count += 1
-    audit(db, obj, obj.lifecycle_state, "APPLICATION_ACCESS_RECORDED")
-    db.commit()
+    find_object(db, object_id)
+    with object_lock(db.get_bind(), object_id, get_settings().object_lock_wait_seconds):
+        obj = db.get(StorageObject, object_id, populate_existing=True)
+        obj.last_accessed_at = datetime.now(UTC)
+        obj.access_count += 1
+        audit(db, obj, obj.lifecycle_state, "APPLICATION_ACCESS_RECORDED")
+        db.commit()
     return obj
