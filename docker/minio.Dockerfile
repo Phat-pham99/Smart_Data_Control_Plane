@@ -1,11 +1,11 @@
-FROM golang:1.24-bookworm AS server-build
+FROM golang:1.25-bookworm AS server-build
 WORKDIR /source
 RUN git init && git remote add origin https://github.com/minio/minio.git \
     && git fetch --depth=1 origin 01ce918d8279a20e4706b96a64396146894adee4 \
     && git checkout --detach FETCH_HEAD \
     && CGO_ENABLED=0 go build -trimpath -o /out/minio .
 
-FROM golang:1.24-bookworm AS client-build
+FROM golang:1.25-bookworm AS client-build
 WORKDIR /source
 RUN git init && git remote add origin https://github.com/minio/mc.git \
     && git fetch --depth=1 origin d6541ea280b73a834b64d4097e21f2be77676104 \
