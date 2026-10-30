@@ -9,7 +9,15 @@ from app.config import get_settings
 
 _settings = get_settings()
 
-engine = create_engine(_settings.database_url, pool_pre_ping=True, future=True)
+engine = create_engine(
+    _settings.database_url,
+    pool_pre_ping=True,
+    pool_timeout=_settings.dependency_timeout_seconds,
+    connect_args={
+        "connect_timeout": _settings.dependency_timeout_seconds,
+        "options": f"-c statement_timeout={_settings.dependency_timeout_seconds * 1000}",
+    },
+)
 SessionLocal = sessionmaker(
     bind=engine,
     autoflush=False,

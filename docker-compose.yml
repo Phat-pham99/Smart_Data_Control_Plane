@@ -8,7 +8,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-lifecycle}
       POSTGRES_DB: ${POSTGRES_DB:-lifecycle}
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -19,9 +19,9 @@ services:
 
   redis:
     image: redis:7-alpine
-    command: ["redis-server", "--appendonly", "yes"]
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
     ports:
-      - "${REDIS_PORT:-6379}:6379"
+      - "127.0.0.1:${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -29,6 +29,44 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  minio:
+    build:
+      context: .
+      dockerfile: docker/minio.Dockerfile
+      target: minio-server
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-admin-password}
+    ports:
+      - "127.0.0.1:${MINIO_PORT:-9000}:9000"
+      - "127.0.0.1:${MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9000/minio/health/live', timeout=2)"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  minio-init:
+    build:
+      context: .
+      dockerfile: docker/minio.Dockerfile
+      target: minio-client
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-local-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-admin-password}
+      MINIO_APP_USER: ${MINIO_APP_USER:-lifecycle-app}
+      MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:-local-app-password}
+    volumes:
+      - ./docker/minio-init.sh:/bootstrap/init.sh:ro
+      - ./docker/minio-policy.json:/bootstrap/policy.json:ro
+    entrypoint: ["/bin/sh", "/bootstrap/init.sh"]
 
   api:
     build: .
@@ -38,28 +76,36 @@ services:
       ENVIRONMENT: ${ENVIRONMENT:-development}
       RUN_MIGRATIONS: "true"
       WAIT_FOR_DEPS: "true"
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_PUBLIC_ENDPOINT_URL: http://localhost:${MINIO_PORT:-9000}
+      S3_BUCKET: lifecycle-dev
+      S3_STAGING_BUCKET: lifecycle-staging
+      S3_ARCHIVE_BUCKET: lifecycle-archive
+      AWS_ACCESS_KEY_ID: ${MINIO_APP_USER:-lifecycle-app}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_APP_PASSWORD:-local-app-password}
     ports:
-      - "${API_PORT:-8000}:8000"
+      - "127.0.0.1:${API_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     healthcheck:
       test:
         [
           "CMD",
           "python",
           "-c",
-          "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready', timeout=25)",
         ]
       interval: 10s
-      timeout: 5s
+      timeout: 30s
       retries: 5
       start_period: 15s
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
   worker:
+    profiles: ["legacy-worker"]
     build: .
     environment:
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-lifecycle}:${POSTGRES_PASSWORD:-lifecycle}@postgres:5432/${POSTGRES_DB:-lifecycle}
@@ -78,9 +124,10 @@ services:
         "app.celery_app.celery_app",
         "worker",
         "--loglevel=info",
-        "--concurrency=4",
+        "--concurrency=1",
       ]
 
 volumes:
   postgres_data:
   redis_data:
+  minio_data:
