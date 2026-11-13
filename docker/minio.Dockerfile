@@ -12,14 +12,14 @@ RUN git init && git remote add origin https://github.com/minio/mc.git \
     && git checkout --detach FETCH_HEAD \
     && CGO_ENABLED=0 go build -trimpath -o /out/mc .
 
-FROM python:3.12-slim AS minio-server
+FROM python:3.15-slim AS minio-server
 COPY --from=server-build /out/minio /usr/local/bin/minio
 COPY --from=server-build /source/LICENSE /usr/share/licenses/minio/LICENSE
 RUN useradd --uid 10001 --create-home minio && mkdir /data && chown minio:minio /data
 USER minio
 ENTRYPOINT ["minio"]
 
-FROM python:3.12-slim AS minio-client
+FROM python:3.15-slim AS minio-client
 COPY --from=client-build /out/mc /usr/local/bin/mc
 COPY --from=client-build /source/LICENSE /usr/share/licenses/mc/LICENSE
 ENTRYPOINT ["mc"]
