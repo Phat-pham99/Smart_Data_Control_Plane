@@ -63,9 +63,12 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-admin-password}
       MINIO_APP_USER: ${MINIO_APP_USER:-lifecycle-app}
       MINIO_APP_PASSWORD: ${MINIO_APP_PASSWORD:-local-app-password}
+      MINIO_WORKER_USER: ${MINIO_WORKER_USER:-lifecycle-worker}
+      MINIO_WORKER_PASSWORD: ${MINIO_WORKER_PASSWORD:-local-worker-password}
     volumes:
       - ./docker/minio-init.sh:/bootstrap/init.sh:ro
       - ./docker/minio-policy.json:/bootstrap/policy.json:ro
+      - ./docker/minio-worker-policy.json:/bootstrap/worker-policy.json:ro
     entrypoint: ["/bin/sh", "/bootstrap/init.sh"]
 
   api:
@@ -103,6 +106,27 @@ services:
       retries: 5
       start_period: 15s
     command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  lifecycle-worker:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-lifecycle}:${POSTGRES_PASSWORD:-lifecycle}@postgres:5432/${POSTGRES_DB:-lifecycle}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      WAIT_FOR_DEPS: "true"
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_BUCKET: lifecycle-dev
+      S3_STAGING_BUCKET: lifecycle-staging
+      S3_ARCHIVE_BUCKET: lifecycle-archive
+      WORKER_AWS_ACCESS_KEY_ID: ${MINIO_WORKER_USER:-lifecycle-worker}
+      WORKER_AWS_SECRET_ACCESS_KEY: ${MINIO_WORKER_PASSWORD:-local-worker-password}
+    # The API applies migrations; the worker needs no Redis to be correct.
+    depends_on:
+      api:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    stop_grace_period: 60s
+    command: ["python", "-m", "app.tasks.lifecycle", "run"]
 
   worker:
     profiles: ["legacy-worker"]

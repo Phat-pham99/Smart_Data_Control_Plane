@@ -61,11 +61,19 @@ ALLOWED_TRANSITIONS: dict[LifecycleState, frozenset[LifecycleState]] = {
     LifecycleState.INGESTING: frozenset({LifecycleState.ACTIVE, LifecycleState.FAILED}),
     LifecycleState.CREATED: frozenset({LifecycleState.ACTIVE, LifecycleState.FAILED}),
     LifecycleState.ACTIVE: frozenset({LifecycleState.ARCHIVE_REQUESTED, LifecycleState.FAILED}),
-    LifecycleState.ARCHIVE_REQUESTED: frozenset({LifecycleState.ARCHIVING, LifecycleState.FAILED}),
-    LifecycleState.ARCHIVING: frozenset({LifecycleState.ARCHIVED, LifecycleState.FAILED}),
+    LifecycleState.ARCHIVE_REQUESTED: frozenset(
+        {LifecycleState.ARCHIVING, LifecycleState.ACTIVE, LifecycleState.FAILED}
+    ),
+    LifecycleState.ARCHIVING: frozenset(
+        {LifecycleState.ARCHIVED, LifecycleState.ACTIVE, LifecycleState.FAILED}
+    ),
     LifecycleState.ARCHIVED: frozenset({LifecycleState.RESTORE_REQUESTED, LifecycleState.FAILED}),
-    LifecycleState.RESTORE_REQUESTED: frozenset({LifecycleState.RESTORING, LifecycleState.FAILED}),
-    LifecycleState.RESTORING: frozenset({LifecycleState.ACTIVE, LifecycleState.FAILED}),
+    LifecycleState.RESTORE_REQUESTED: frozenset(
+        {LifecycleState.RESTORING, LifecycleState.ARCHIVED, LifecycleState.FAILED}
+    ),
+    LifecycleState.RESTORING: frozenset(
+        {LifecycleState.ACTIVE, LifecycleState.ARCHIVED, LifecycleState.FAILED}
+    ),
     LifecycleState.RESTORED: frozenset({LifecycleState.ACTIVE, LifecycleState.FAILED}),
     LifecycleState.FAILED: frozenset(
         {
