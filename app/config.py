@@ -40,6 +40,10 @@ class Settings(BaseSettings):
 
     admin_api_key: str | None = None
 
+    archive_policy_name: str = "archive-completed-cold-datasets"
+    job_max_attempts: int = Field(default=5, ge=1, le=20)
+    object_lock_wait_seconds: float = Field(default=2, ge=0, le=10)
+
     @property
     def broker_url(self) -> str:
         return self.celery_broker_url or self.redis_url

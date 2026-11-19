@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -33,6 +35,13 @@ class AuditEvent(UUIDPrimaryKeyMixin, Base):
     )
     reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     policy_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    event_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    actor_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    policy_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("policies.id", ondelete="SET NULL", name="fk_audit_events_policy_id_policies"),
+        nullable=True,
+    )
+    details: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
 
     def __repr__(self) -> str:  # pragma: no cover - debug helper
         return f"AuditEvent(id={self.id!r}, {self.previous_state!r} -> {self.new_state!r})"

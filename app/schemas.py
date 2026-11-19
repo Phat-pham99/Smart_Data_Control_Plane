@@ -60,6 +60,9 @@ class ObjectView(BaseModel):
     lifecycle_state: str
     desired_storage_class: str
     observed_storage_class: str
+    archive_copy_retained: bool
+    ingestion_verified_at: datetime | None
+    restored_at: datetime | None
     created_at: datetime
 
 
@@ -72,3 +75,81 @@ class UploadSession(BaseModel):
 class ObjectPage(BaseModel):
     items: list[ObjectView]
     next_cursor: str | None
+
+
+class RetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500, pattern=r"^[\x20-\x7e]+$")
+
+
+class DecisionSummary(BaseModel):
+    eligible: bool
+    reasons: list[str]
+    policy_name: str
+    policy_version: int
+    evaluated_at: datetime
+
+
+class AttemptView(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    attempt_number: int
+    stage: str
+    started_at: datetime
+    finished_at: datetime | None
+    error_class: str | None
+    detail: str | None
+
+
+class JobView(BaseModel):
+    """Job status without storage locations, credentials, or signed URLs."""
+
+    id: UUID
+    object_id: UUID | None
+    job_type: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    attempt_count: int
+    max_attempts: int
+    next_attempt_at: datetime | None
+    error_class: str | None
+    error_message: str | None
+    actor_kind: str | None
+    decision: DecisionSummary | None
+    retry_of_job_id: UUID | None
+    replaced_by_job_id: UUID | None
+
+    @classmethod
+    def from_job(cls, job, replaced_by: UUID | None) -> JobView:
+        decision = None
+        if job.decision:
+            decision = DecisionSummary(
+                eligible=job.decision["eligible"],
+                reasons=job.decision["reasons"],
+                policy_name=job.decision["policy"]["name"],
+                policy_version=job.decision["policy"]["version"],
+                evaluated_at=job.decision["evaluated_at"],
+            )
+        return cls(
+            id=job.id,
+            object_id=job.object_id,
+            job_type=job.job_type.value,
+            status=job.status.value,
+            created_at=job.created_at,
+            updated_at=job.updated_at,
+            started_at=job.started_at,
+            finished_at=job.finished_at,
+            attempt_count=job.attempt_count,
+            max_attempts=job.max_attempts,
+            next_attempt_at=job.next_attempt_at,
+            error_class=job.error_class,
+            error_message=job.error_message,
+            actor_kind=job.actor_kind,
+            decision=decision,
+            retry_of_job_id=job.retry_of_job_id,
+            replaced_by_job_id=replaced_by,
+        )

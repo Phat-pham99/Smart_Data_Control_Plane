@@ -11,6 +11,7 @@ from sqlalchemy import (
     Integer,
     String,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -35,6 +36,12 @@ class StorageObject(UUIDPrimaryKeyMixin, TimestampMixin, OptimisticLockMixin, Ba
         CheckConstraint("size_bytes >= 0", name="ck_objects_size"),
         CheckConstraint("content_version > 0", name="ck_objects_content_version"),
         Index("ix_objects_owner_created", "owner_id", "created_at", "id"),
+        Index(
+            "ix_objects_archive_candidates",
+            "last_accessed_at",
+            "id",
+            postgresql_where=text("lifecycle_state = 'ACTIVE' AND legal_hold = false"),
+        ),
     )
 
     bucket: Mapped[str] = mapped_column(String(255), nullable=False)
@@ -58,6 +65,13 @@ class StorageObject(UUIDPrimaryKeyMixin, TimestampMixin, OptimisticLockMixin, Ba
     request_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     staging_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
     staging_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    archive_bucket: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    archive_key: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    archive_copy_retained: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    restored_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ingestion_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     checksum_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     storage_class: Mapped[StorageClass] = mapped_column(
