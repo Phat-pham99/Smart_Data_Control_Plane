@@ -14,13 +14,21 @@ class IntegrityError(ValueError):
     pass
 
 
+MISSING_CODES = {"404", "NoSuchKey", "NotFound"}
+
+
 class ObjectStorage:
-    def __init__(self, settings: Settings):
+    def __init__(
+        self,
+        settings: Settings,
+        access_key_id: str | None = None,
+        secret_access_key: str | None = None,
+    ):
         self.settings = settings
         options = {
             "region_name": settings.s3_region,
-            "aws_access_key_id": settings.aws_access_key_id,
-            "aws_secret_access_key": settings.aws_secret_access_key,
+            "aws_access_key_id": access_key_id or settings.aws_access_key_id,
+            "aws_secret_access_key": secret_access_key or settings.aws_secret_access_key,
             "config": Config(
                 signature_version="s3v4",
                 s3={"addressing_style": "path"},
@@ -85,16 +93,41 @@ class ObjectStorage:
         source_etag = self.verify(
             obj.staging_bucket, obj.staging_key, obj.size_bytes, obj.checksum_sha256
         )
-        self.client.copy_object(
-            Bucket=obj.bucket,
-            Key=obj.key,
-            CopySource={"Bucket": obj.staging_bucket, "Key": obj.staging_key},
-            CopySourceIfMatch=source_etag,
-            ContentType=obj.content_type,
-            MetadataDirective="REPLACE",
-            Metadata={"sha256": obj.checksum_sha256},
+        self.copy(
+            obj.staging_bucket,
+            obj.staging_key,
+            obj.bucket,
+            obj.key,
+            source_etag,
+            obj.content_type,
+            obj.checksum_sha256,
         )
         self.verify(obj.bucket, obj.key, obj.size_bytes, obj.checksum_sha256)
+
+    def inspect(self, bucket, key):
+        """Return size and ETag, or None when the object is absent."""
+
+        try:
+            response = self.client.head_object(Bucket=bucket, Key=key)
+        except ClientError as error:
+            if error.response["Error"]["Code"] in MISSING_CODES:
+                return None
+            raise
+        return {"size": response["ContentLength"], "etag": response["ETag"]}
+
+    def copy(self, source_bucket, source_key, bucket, key, source_etag, content_type, sha256):
+        self.client.copy_object(
+            Bucket=bucket,
+            Key=key,
+            CopySource={"Bucket": source_bucket, "Key": source_key},
+            CopySourceIfMatch=source_etag,
+            ContentType=content_type,
+            MetadataDirective="REPLACE",
+            Metadata={"sha256": sha256},
+        )
+
+    def delete(self, bucket, key):
+        self.client.delete_object(Bucket=bucket, Key=key)
 
     def download_url(self, obj):
         response = self.client.head_object(Bucket=obj.bucket, Key=obj.key)
@@ -110,6 +143,20 @@ class ObjectStorage:
 @lru_cache
 def get_storage():
     return ObjectStorage(get_settings())
+
+
+@lru_cache
+def get_worker_storage():
+    """Worker client; refuses to run without its own scoped credentials."""
+
+    settings = get_settings()
+    key_id = settings.worker_aws_access_key_id
+    secret = settings.worker_aws_secret_access_key
+    if not key_id or not secret:
+        raise RuntimeError("Worker storage credentials are not configured")
+    if key_id == settings.aws_access_key_id:
+        raise RuntimeError("Worker must not reuse the API storage credentials")
+    return ObjectStorage(settings, key_id, secret)
 
 
 if __name__ == "__main__":

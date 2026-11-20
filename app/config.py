@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     job_max_attempts: int = Field(default=5, ge=1, le=20)
     object_lock_wait_seconds: float = Field(default=2, ge=0, le=10)
 
+    worker_aws_access_key_id: str | None = None
+    worker_aws_secret_access_key: str | None = None
+    poll_batch_size: int = Field(default=20, ge=1, le=500)
+    poll_interval_seconds: float = Field(default=2, ge=0.1, le=300)
+    retry_base_seconds: float = Field(default=2, ge=0.1, le=300)
+    retry_cap_seconds: float = Field(default=60, ge=1, le=3600)
+    retry_jitter_ratio: float = Field(default=0.25, ge=0, le=1)
+
     @property
     def broker_url(self) -> str:
         return self.celery_broker_url or self.redis_url

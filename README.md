@@ -112,7 +112,7 @@ A production-inspired reference project for application-aware object lifecycle g
 
 **Storage direction:** The MVP is designed to use MinIO for local development, integration tests, and demonstrations. A future production-ready version should use **Amazon S3 for globally accessed, terabyte-scale object data**.
 
-**Current status: verified catalog ingestion, locally tested.** Upload initiation/completion, streamed SHA-256 verification, metadata discovery, download, access recording, and restart persistence work against PostgreSQL and MinIO. Milestone 2 has started: policy evaluation and archive/restore admission record durable jobs, but no worker moves bytes yet. Reconciliation and benchmarks remain planned. This is not a production-ready service.
+**Current status: verified catalog ingestion, locally tested.** Upload initiation/completion, streamed SHA-256 verification, metadata discovery, download, access recording, and restart persistence work against PostgreSQL and MinIO. Milestone 2 is in progress: policy-guarded archive/restore requests are executed by a PostgreSQL-polling worker that verifies bytes before any delete; Redis Pub/Sub hints and the Milestone 2 evidence report are still planned. Reconciliation and benchmarks remain planned. This is not a production-ready service.
 
 The broader scope and exit criteria are in [PLAN.md](PLAN.md). Commands, local verification evidence, and remaining limitations are recorded in [docs/milestone-1.md](docs/milestone-1.md).
 
@@ -251,7 +251,7 @@ cp .env.example .env
 docker compose up --build
 ```
 
-Compose starts PostgreSQL 16, Redis 7, MinIO, bucket/user initialization, and the non-root FastAPI image. The API waits for PostgreSQL before applying migrations. The obsolete Celery health worker is opt-in through the `legacy-worker` profile; it is not the planned Pub/Sub subscriber/poller.
+Compose starts PostgreSQL 16, Redis 7, MinIO, bucket/user initialization, the non-root FastAPI image, and the `lifecycle-worker` (PostgreSQL polling, separate scoped MinIO user, no Redis dependency). The API waits for PostgreSQL before applying migrations; the worker starts after the API is healthy. The obsolete Celery health worker is opt-in through the `legacy-worker` profile.
 
 ```bash
 curl http://localhost:8000/
@@ -279,8 +279,10 @@ See [.env.example](.env.example) and [app/config.py](app/config.py). Keep real s
 | `S3_REGION`, `S3_BUCKET`, `S3_STAGING_BUCKET`, `S3_ENDPOINT_URL` | Internal verified-ingestion storage settings |
 | `S3_PUBLIC_ENDPOINT_URL` | Endpoint clients can reach for signed transfers |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Scoped storage credentials; synthetic local resources only |
+| `WORKER_AWS_ACCESS_KEY_ID`, `WORKER_AWS_SECRET_ACCESS_KEY` | Separate lifecycle-worker MinIO identity (active/archive copy, active-only delete); the worker refuses to start without it or with the API credentials |
+| `POLL_BATCH_SIZE`, `POLL_INTERVAL_SECONDS`, `RETRY_BASE_SECONDS`, `RETRY_CAP_SECONDS`, `RETRY_JITTER_RATIO`, `JOB_MAX_ATTEMPTS` | Worker polling and bounded retry tuning |
 | `MAX_UPLOAD_BYTES`, `SIGNED_URL_SECONDS` | Host application defaults: 10 MiB uploads and 300-second signed transfers |
-| `ADMIN_API_KEY` | Configuration field only; no admin endpoint enforcement is implemented |
+| `ADMIN_API_KEY` | Enables the admin retry endpoint (`X-Admin-API-Key`); unset returns 503 |
 
 Do not interpret configuration fields as evidence that their associated features exist.
 
@@ -309,9 +311,18 @@ Initiation requires owner/dataset, logical key, size, SHA-256 and an aware reten
 
 Discovery supports owner/dataset/workflow/lifecycle, desired/observed class, `created_before`, `created_after`, `last_access_before`, and `limit`/`cursor`. Timestamp filters require a timezone. The executable [synthetic round-trip script](scripts/verify_restart.py) and OpenAPI schema show the request contract.
 
-Archive and restore requests only record durable intent: object state, job, audit decision and outbox event commit in one PostgreSQL transaction under the per-object advisory lock. No worker executes them yet, so queued jobs stay `PENDING` and no bytes move. Manual requests and `python -m app.policies enqueue` use the same seeded `archive-completed-cold-datasets` v1 policy and safety guards; `python -m app.policies evaluate [--at ISO] [--object-id ID]` is a dry run that returns reason codes. Activated policy versions are immutable. Admin retry is disabled (503) unless `ADMIN_API_KEY` is set and is not an authorization model for other routes.
+Archive and restore requests record durable intent first: object state, job, audit decision and outbox event commit in one PostgreSQL transaction under the per-object advisory lock. Manual requests and `python -m app.policies enqueue` use the same seeded `archive-completed-cold-datasets` v1 policy and safety guards; `python -m app.policies evaluate [--at ISO] [--object-id ID]` is a dry run that returns reason codes. Activated policy versions are immutable. Admin retry is disabled (503) unless `ADMIN_API_KEY` is set and is not an authorization model for other routes.
 
-The polling worker, verified archive/restore transfers, Redis Pub/Sub hints, controlled recovery and metrics remain planned in [docs/milestone-2-plan.md](docs/milestone-2-plan.md).
+The lifecycle worker (`python -m app.tasks.lifecycle run`) polls due jobs and executes one at a time under the object lock:
+
+- **Archive:** revalidate the job's policy version, verify the source, copy with an ETag precondition (or reuse an archive copy only after verifying its bytes), verify the destination, revalidate again, record delete intent, delete the active copy, then commit `ARCHIVED`.
+- **Restore:** verify the archive copy, copy or verify the active destination, commit `ACTIVE` with `archive_copy_retained=true`. The archive copy is never deleted.
+- **Failures:** settled read failures retry with capped exponential backoff and jitter until `max_attempts`; permanent failures (checksum mismatch, conflicting destination, denied storage, policy change) become `FAILED` and return the object to its last verified placement; uncertain outcomes (timeout around copy/delete, lost lock, commit failure after delete) become `RECOVERY_REQUIRED` and are never retried automatically. At startup, `RUNNING` jobs whose object lock is free are quarantined to `RECOVERY_REQUIRED`.
+- **Controlled recovery:** after confirming the old worker has stopped and storage requests have settled, run `python -m app.tasks.lifecycle recover --job-id ID --operator NAME --attest-worker-stopped --attest-requests-settled`. It inspects real bytes and resumes the same job; a missing source is accepted only when this job recorded delete intent.
+
+`python -m app.tasks.lifecycle run-once` executes one bounded batch. With the stack running, `uv run python scripts/verify_lifecycle.py --api http://localhost:8000` performs a synthetic rejection, archive and restore and prints IDs, decisions, durations and digest checks (no URLs or credentials).
+
+Redis Pub/Sub wake-ups, the outbox publisher, metrics and the Milestone 2 evidence report remain planned in [docs/milestone-2-phase-4-plan.md](docs/milestone-2-phase-4-plan.md) and [docs/milestone-2-phase-5-plan.md](docs/milestone-2-phase-5-plan.md). Limits: local MinIO only, one worker, advisory locks are not distributed fencing, and a download URL issued before archival stops working once the active copy is deleted.
 
 Policy evaluation, outbox notification publication, reconciliation, and finding inspection will start as bounded CLI commands rather than a large admin API. The execution adapter will continuously subscribe and independently poll eligible database operations and due retries.
 
@@ -322,7 +333,7 @@ Milestone 1 has local exit evidence; the remaining milestones are planned. No CI
 | Milestone | Required exit evidence | Status |
 | --- | --- | --- |
 | 1. Verified catalog round trip | PostgreSQL/MinIO upload, checksum verification, query, download, duplicates, and restart persistence | Locally verified; see evidence |
-| 2. One complete lifecycle | Explainable policy -> archive -> restore; Pub/Sub wake-ups with database polling, missed-notification recovery, safe duplicates, concurrency guards, persisted retry/failure evidence | In progress: schema, policy, transactional admission and admin retry locally tested; worker and transfers planned |
+| 2. One complete lifecycle | Explainable policy -> archive -> restore; Pub/Sub wake-ups with database polling, missed-notification recovery, safe duplicates, concurrency guards, persisted retry/failure evidence | In progress: phases 1-3 locally tested (admission, polling worker, verified transfers, controlled recovery); Pub/Sub hints and evidence report planned |
 | 3. Recovery and demonstration | Bounded reconciliation, findings, minimal metrics, and documented outcomes for every failure-matrix case | Planned |
 | 4. Evaluation and public evidence | Clean-checkout demonstration, fair discovery benchmark, maintenance overhead, and reproducible results report | Planned |
 

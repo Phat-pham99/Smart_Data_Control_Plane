@@ -8,3 +8,6 @@ done
 mc admin user add local "$MINIO_APP_USER" "$MINIO_APP_PASSWORD" >/dev/null
 mc admin policy create local lifecycle-app /bootstrap/policy.json
 mc admin policy attach local lifecycle-app --user "$MINIO_APP_USER"
+mc admin user add local "$MINIO_WORKER_USER" "$MINIO_WORKER_PASSWORD" >/dev/null
+mc admin policy create local lifecycle-worker /bootstrap/worker-policy.json
+mc admin policy attach local lifecycle-worker --user "$MINIO_WORKER_USER"
